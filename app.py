@@ -123,6 +123,49 @@ if 'loaded_signature' not in st.session_state:
 # Chargement des profils depuis le fichier
 signature_profiles = load_profiles()
 
+# Fonctions pour le traitement des pages
+def parse_page_numbers(page_string, total_pages):
+    """Parse une chaîne de pages personnalisées et retourne une liste de numéros de page"""
+    if not page_string:
+        return []
+    
+    pages = set()
+    parts = page_string.replace(" ", "").split(",")
+    
+    for part in parts:
+        if "-" in part:
+            # Plage de pages (ex: 1-3)
+            try:
+                start, end = part.split("-")
+                start = max(1, int(start))
+                end = min(total_pages, int(end))
+                pages.update(range(start, end + 1))
+            except ValueError:
+                continue
+        else:
+            # Page unique
+            try:
+                page_num = int(part)
+                if 1 <= page_num <= total_pages:
+                    pages.add(page_num)
+            except ValueError:
+                continue
+    
+    return sorted(list(pages))
+
+def get_pages_to_sign(page_option, custom_pages, total_pages):
+    """Détermine quelles pages doivent être signées selon l'option choisie"""
+    if page_option == "Première page uniquement":
+        return [1] if total_pages > 0 else []
+    elif page_option == "Dernière page uniquement":
+        return [total_pages] if total_pages > 0 else []
+    elif page_option == "Toutes les pages":
+        return list(range(1, total_pages + 1))
+    elif page_option == "Pages personnalisées":
+        return parse_page_numbers(custom_pages, total_pages)
+    else:
+        return [1]  # Par défaut, première page
+
 # Sidebar pour les paramètres
 with st.sidebar:
     st.header("⚙️ Paramètres de signature")
@@ -263,7 +306,12 @@ with st.sidebar:
     inclure_date = st.checkbox("📅 Inclure la date", value=default_inclure_date)
     
     if inclure_date:
-        date_signature = st.date_input("Date de signature", datetime.now().date())
+        date_signature = st.date_input(
+            "Date de signature", 
+            datetime.now().date(),
+            format="DD/MM/YYYY",
+            help="Format: jour/mois/année"
+        )
     
     # Position du texte
     text_offset_y = st.slider("Décalage texte (Y)", -50, 50, default_text_offset, 
@@ -366,6 +414,8 @@ with st.sidebar:
                 st.write(f"- Position: {profile_data['x_position']},{profile_data['y_position']}")
                 st.write(f"- Taille: {profile_data['signature_width']}x{profile_data['signature_height']}")
                 st.write(f"- Pages: {profile_data['page_option']}")
+                if 'nom_signataire' in profile_data and profile_data['nom_signataire']:
+                    st.write(f"- Signataire: {profile_data['nom_signataire']}")
                 if 'signature_image_path' in profile_data:
                     st.write("- 📷 Image de signature: ✅")
                 else:
@@ -634,7 +684,6 @@ with tab2:
                 if len(pdf_files) > 3:
                     st.write(f"  • ... et {len(pdf_files) - 3} autres")
 
-# Fonctions de traitement corrigées
 def create_signature_overlay(signature_img, nom, date_sig, x, y, width, height, text_offset, font_size):
     """Crée un PDF overlay avec la signature et les informations"""
     packet = io.BytesIO()
@@ -668,48 +717,6 @@ def create_signature_overlay(signature_img, nom, date_sig, x, y, width, height, 
     except Exception as e:
         st.error(f"Erreur lors de la création de l'overlay: {str(e)}")
         return None
-
-def parse_page_numbers(page_string, total_pages):
-    """Parse une chaîne de pages personnalisées et retourne une liste de numéros de page"""
-    if not page_string:
-        return []
-    
-    pages = set()
-    parts = page_string.replace(" ", "").split(",")
-    
-    for part in parts:
-        if "-" in part:
-            # Plage de pages (ex: 1-3)
-            try:
-                start, end = part.split("-")
-                start = max(1, int(start))
-                end = min(total_pages, int(end))
-                pages.update(range(start, end + 1))
-            except ValueError:
-                continue
-        else:
-            # Page unique
-            try:
-                page_num = int(part)
-                if 1 <= page_num <= total_pages:
-                    pages.add(page_num)
-            except ValueError:
-                continue
-    
-    return sorted(list(pages))
-
-def get_pages_to_sign(page_option, custom_pages, total_pages):
-    """Détermine quelles pages doivent être signées selon l'option choisie"""
-    if page_option == "Première page uniquement":
-        return [1] if total_pages > 0 else []
-    elif page_option == "Dernière page uniquement":
-        return [total_pages] if total_pages > 0 else []
-    elif page_option == "Toutes les pages":
-        return list(range(1, total_pages + 1))
-    elif page_option == "Pages personnalisées":
-        return parse_page_numbers(custom_pages, total_pages)
-    else:
-        return [1]  # Par défaut, première page
 
 def process_pdf(pdf_file, signature_overlay_packet, page_option, custom_pages=""):
     """Traite un seul PDF en ajoutant la signature sur les pages spécifiées"""
@@ -798,18 +805,20 @@ if st.session_state.processing_complete and st.session_state.processed_files:
 # Bouton de traitement principal
 if not st.session_state.processing_complete:
     if st.button("🚀 Traiter les PDFs", type="primary", use_container_width=True):
-        if not signature_file:
-            st.error("❌ Veuillez uploader une image de signature")
+        if not active_signature:
+            st.error("❌ Veuillez uploader une image de signature ou charger un profil avec image")
         elif not nom_signataire:
             st.error("❌ Veuillez saisir le nom du signataire")
         elif not pdf_files:
             st.error("❌ Veuillez uploader au moins un fichier PDF")
+        elif page_option == "Pages personnalisées" and not custom_pages.strip():
+            st.error("❌ Veuillez spécifier les pages à signer (ex: 1,3,5 ou 1-3)")
         else:
             # Traitement des PDFs
             with st.spinner("🔄 Traitement en cours..."):
                 # Création de l'overlay de signature
                 signature_overlay = create_signature_overlay(
-                    signature_file,
+                    active_signature,
                     nom_signataire,
                     date_signature if inclure_date else None,
                     x_position,
